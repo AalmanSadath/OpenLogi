@@ -18,6 +18,8 @@ use super::{Host, Step};
 #[derive(Clone, Copy, PartialEq, Eq, Debug, EnumIter)]
 pub(crate) enum Job {
     Rustfmt,
+    Typos,
+    PublishClosure,
     Shell,
     Clippy,
     Msrv,
@@ -26,6 +28,7 @@ pub(crate) enum Job {
     TestsMacos,
     CargoDeny,
     ClippyWindows,
+    Wasm,
     /// Locale parity. Part of `tests (macos)`, and the suite Linux CI cannot
     /// run because it excludes `openlogi-desktop`.
     I18n,
@@ -64,25 +67,55 @@ const GROUPS: [(&str, &[Job]); 2] = [
     ("test", &[Job::TestsLinux, Job::TestsMacos]),
 ];
 
+fn default_spec(
+    name: &'static str,
+    aliases: &'static [&'static str],
+    caveat: &'static str,
+) -> Spec {
+    Spec {
+        name,
+        aliases,
+        prefix: None,
+        hosts: Host::ANY,
+        in_default_run: true,
+        caveat,
+    }
+}
+
+fn focused_spec(
+    name: &'static str,
+    aliases: &'static [&'static str],
+    caveat: &'static str,
+) -> Spec {
+    Spec {
+        name,
+        aliases,
+        prefix: None,
+        hosts: Host::ANY,
+        in_default_run: false,
+        caveat,
+    }
+}
+
 impl Job {
     fn spec(self) -> Spec {
         match self {
-            Self::Rustfmt => Spec {
-                name: "rustfmt",
-                aliases: &["fmt"],
-                prefix: None,
-                hosts: Host::ANY,
-                in_default_run: true,
-                caveat: "",
-            },
-            Self::Shell => Spec {
-                name: "shell",
-                aliases: &[],
-                prefix: None,
-                hosts: Host::ANY,
-                in_default_run: true,
-                caveat: "shellcheck and shfmt over every tracked shell script. shfmt decides what counts as one — by extension, and by shebang for the extensionless ones — and takes its formatting options from .editorconfig, which any printer flag would discard.",
-            },
+            Self::Rustfmt => default_spec("rustfmt", &["fmt"], ""),
+            Self::Typos => default_spec(
+                "typos",
+                &["spelling"],
+                "Low-noise source spelling check. Needs typos-cli, which the devenv shell provides.",
+            ),
+            Self::PublishClosure => default_spec(
+                "publish closure",
+                &["publish-closure", "publish"],
+                "Every normal/build path dependency of a crates.io package must name a registry version and target another publishable workspace package.",
+            ),
+            Self::Shell => default_spec(
+                "shell",
+                &[],
+                "shellcheck and shfmt over every tracked shell script. shfmt decides what counts as one — by extension, and by shebang for the extensionless ones — and takes its formatting options from .editorconfig, which any printer flag would discard.",
+            ),
             Self::Clippy => Spec {
                 name: "clippy",
                 aliases: &[],
@@ -141,22 +174,24 @@ impl Job {
                 in_default_run: true,
                 caveat: "CI lints the whole workspace natively on windows-latest. Anywhere else this is the ring-free cross lint over the crates that carry Windows code — a proxy, not that job.",
             },
-            Self::I18n => Spec {
-                name: "i18n",
-                aliases: &[],
+            Self::Wasm => Spec {
+                name: "wasm (portable crates)",
+                aliases: &["wasm"],
                 prefix: None,
                 hosts: Host::ANY,
-                in_default_run: false,
-                caveat: "Locale parity. Part of tests (macos), and the suite Linux CI cannot run because it excludes openlogi-desktop.",
+                in_default_run: true,
+                caveat: "Proves the portable crates depend on nothing host-bound. A check, so it catches what cannot build for wasm — not what builds and then fails at runtime, which `std::thread::spawn` in the hidpp read loop and `tokio::time` both would.",
             },
-            Self::Wire => Spec {
-                name: "wire_format",
-                aliases: &["wire"],
-                prefix: None,
-                hosts: Host::ANY,
-                in_default_run: false,
-                caveat: "The bincode/tarpc golden wire format. Part of the test jobs.",
-            },
+            Self::I18n => focused_spec(
+                "i18n",
+                &[],
+                "Locale parity. Part of tests (macos), and the suite Linux CI cannot run because it excludes openlogi-desktop.",
+            ),
+            Self::Wire => focused_spec(
+                "wire_format",
+                &["wire"],
+                "The bincode/tarpc golden wire format. Part of the test jobs.",
+            ),
         }
     }
 

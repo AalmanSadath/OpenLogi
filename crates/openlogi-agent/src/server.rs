@@ -12,9 +12,9 @@ use futures::StreamExt as _;
 use openlogi_agent_core::action_ring::ActionRingManager;
 use openlogi_agent_core::event_monitor::SharedEventMonitor;
 use openlogi_agent_core::hardware;
-use openlogi_agent_core::hook_runtime::ActionDispatcher;
 use openlogi_agent_core::observable::ObservableState;
 use openlogi_agent_core::orchestrator::{Orchestrator, SharedRuntime};
+use openlogi_agent_core::runtime::ActionDispatcher;
 use openlogi_core::binding::ActionRingSlot;
 use openlogi_core::config::{Config, Lighting};
 use openlogi_core::device::DeviceInventory;
@@ -110,10 +110,17 @@ impl Agent for AgentServer {
         match Config::load_or_default() {
             Ok(config) => {
                 let launch_at_login = config.app_settings.launch_at_login;
+                #[cfg(target_os = "macos")]
+                let app_icon = config.app_settings.app_icon;
                 self.orchestrator.lock().await.reload_config(config);
+                self.dispatcher.cancel_all_buttons();
                 // The GUI's launch-at-login toggle reaches us through this
                 // reload, so re-reconcile the autostart from the new config.
                 crate::launch_agent::reconcile(launch_at_login);
+                // So does the app icon, and the menu-bar item is ours to
+                // restyle — the GUI can only reach the Dock and the bundle.
+                #[cfg(target_os = "macos")]
+                crate::tray::set_icon(app_icon);
                 Ok(())
             }
             Err(error) => {

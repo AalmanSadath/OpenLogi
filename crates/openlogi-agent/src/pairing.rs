@@ -294,8 +294,8 @@ mod tests {
     use std::sync::RwLock;
 
     use openlogi_agent_core::DpiCycles;
-    use openlogi_agent_core::hook_runtime::HookMaps;
     use openlogi_agent_core::receiver_access::ReceiverAccess;
+    use openlogi_agent_core::runtime::hook::HookMaps;
 
     fn shared_runtime() -> SharedRuntime {
         SharedRuntime {
@@ -305,7 +305,7 @@ mod tests {
             capture_plans: Arc::new(RwLock::new(Vec::new())),
             capture_channel: Arc::new(RwLock::new(None)),
             channel_registry: openlogi_hid::ChannelRegistry::default(),
-            channel_pool: openlogi_hid::ChannelPool::default(),
+            channel_pool: openlogi_hid::host::channel_pool(),
             keyboard_spec: Arc::new(RwLock::new(None)),
             keyboard_channel: Arc::new(RwLock::new(None)),
             capture_rearm_generation: Arc::new(0.into()),

@@ -36,6 +36,28 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  typos:
+    name: typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: crate-ci/typos@8a48f81b6c64dcfea44b3633223084c4be58ac5f # v1.49.0
+        with:
+          config: .config/typos.toml
+
+  publish-closure:
+    name: publish closure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          shared-key: linux-stable-debug
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+      - run: cargo xtask release check-publish
+
   # The shell equivalent of `rustfmt` + `clippy`. The file set is every tracked
   # file shfmt recognises as a shell script, so a new script is covered the day
   # it lands — including the extensionless `.agents/*` ones, which it detects by
@@ -218,9 +240,9 @@ jobs:
       # crates.io. cargo-deny picks its roots from the manifest it is given, so
       # this was implicit while `openlogi` was the workspace root package; with a
       # virtual root it must be explicit, or the git-pinned gpui/zed tree enters
-      # the graph and the policy in deny.toml no longer holds. Widening the scope
-      # to the app crates is tracked separately — see deny.toml.
-      - run: cargo deny --all-features --manifest-path crates/openlogi/Cargo.toml check
+      # the graph and the policy in `.cargo/deny.toml` no longer holds. Widening
+      # the scope to the app crates is tracked separately — see that file.
+      - run: cargo deny --config .cargo/deny.toml --all-features --manifest-path crates/openlogi/Cargo.toml check
 
   clippy-windows:
     name: clippy (windows)
@@ -242,3 +264,26 @@ jobs:
       # and the agent's HKCU-Run autostart) that the Linux/macOS clippy jobs
       # never compile.
       - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  wasm:
+    name: wasm (portable crates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-rust
+          shared-key: wasm-stable-debug
+          save-if: ${{ github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' }}
+      # A portability gate, not a deliverable: nothing here is built for the
+      # browser. `wasm32-unknown-unknown` has no OS under it, so a crate that
+      # picks up a filesystem, a randomness source or a thread stops compiling
+      # here and nowhere else. The crate list lives in xtask
+      # (`WASM_PORTABLE_CRATES`) and the drift test keeps the two in step.
+      - run: cargo check -p openlogi-device-registry -p openlogi-hidpp -p openlogi-device --target wasm32-unknown-unknown
+      # `openlogi-core` earns its place only with `fs` off: that feature is
+      # the config file, and a config file needs a filesystem.
+      - run: cargo check -p openlogi-core --no-default-features --target wasm32-unknown-unknown

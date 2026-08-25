@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
+use openlogi_core::app::ForegroundApp;
 use openlogi_core::binding::Action;
 use openlogi_core::bindings::{bindings_for, oshook_gestures_for};
 use openlogi_core::config::{Config, LightSettings, ScrollResolution};
@@ -31,9 +32,9 @@ use tracing::{debug, info, warn};
 use crate::action_ring::ActionRingSessionSpec;
 use crate::capture_plan::{DeviceCapturePlan, SharedCapturePlans, plan_for_device};
 use crate::hardware::DeviceOp;
-use crate::hook_runtime::{HookMaps, SharedHookMaps};
 use crate::observable::ObservableState;
 use crate::receiver_access::ReceiverAccess;
+use crate::runtime::hook::{HookMaps, SharedHookMaps};
 use crate::watchers::host_switch::{HostSwitchLink, HostSwitchLinks};
 use crate::watchers::keyboard::{KeyboardSpec, SharedKeyboardSpec};
 use crate::{DpiCycleState, DpiCycles};
@@ -72,7 +73,7 @@ pub struct SharedRuntime {
     pub hook_maps: SharedHookMaps,
     /// Function-key remapper bindings (keycode+modifiers → action). Not
     /// per-app-profile in M1 (spec non-goal), so a single shared map.
-    pub keyboard_bindings: crate::hook_runtime::SharedKeyboardBindings,
+    pub keyboard_bindings: crate::runtime::hook::SharedKeyboardBindings,
     pub dpi_cycle: Arc<RwLock<DpiCycles>>,
     /// One capture plan per online device — what to divert and how to
     /// dispatch, keyed by the device the events arrive on. Carries each
@@ -145,6 +146,10 @@ pub struct Orchestrator {
     /// set/route/online state looks identical across the sleep gap, so the
     /// next refresh re-applies volatile settings to every online device.
     reapply_all_next_refresh: bool,
+    /// Whether the last enumeration tick failed to open HID++ nodes; published
+    /// atomically with the inventory so no observation pairs a fresh device
+    /// set with a stale flag.
+    hid_open_failures: bool,
     /// Config keys of devices first sighted (or wake-flagged) recently, with
     /// remaining confirming re-apply budget: the first write can race the
     /// device's own boot or reconnect and be lost.
@@ -192,7 +197,7 @@ impl Orchestrator {
             capture_plans: Arc::new(RwLock::new(Vec::new())),
             capture_channel: Arc::new(RwLock::new(None)),
             channel_registry: ChannelRegistry::default(),
-            channel_pool: ChannelPool::default(),
+            channel_pool: openlogi_hid::host::channel_pool(),
             keyboard_spec: Arc::new(RwLock::new(None)),
             keyboard_channel: Arc::new(RwLock::new(None)),
             capture_rearm_generation: Arc::new(AtomicU64::new(0)),
@@ -206,6 +211,7 @@ impl Orchestrator {
             current_app: None,
             inventory: InventoryState::Pending,
             reapply_all_next_refresh: false,
+            hid_open_failures: false,
             reapply_followup: HashMap::new(),
             camera_active: None,
             manual_light_overrides: BTreeMap::new(),
@@ -282,6 +288,7 @@ impl Orchestrator {
             return None;
         }
         Some(KeyboardSpec {
+            config_key: dev.config_key.clone(),
             route: dev.route.clone()?,
             wanted,
             bindings,
@@ -402,10 +409,12 @@ impl Orchestrator {
         &mut self,
         inventories: &[DeviceInventory],
         standalone: &[StandaloneDevice],
+        hid_open_failures: bool,
     ) {
         // Even an empty snapshot is a *completed* enumeration — the watcher
         // skips failed ticks — so the device set is now known either way (and
         // a recovered backend upgrades `Unavailable` back to live data).
+        self.hid_open_failures = hid_open_failures;
         self.inventory = InventoryState::Ready {
             inventories: inventories.to_vec(),
             standalone: standalone.to_vec(),
@@ -675,11 +684,17 @@ impl Orchestrator {
             InventoryState::Ready {
                 inventories,
                 standalone,
-            } => self
-                .observable
-                .set_inventory(health, inventories, standalone),
+            } => {
+                self.observable.set_inventory(
+                    health,
+                    inventories,
+                    standalone,
+                    self.hid_open_failures,
+                );
+            }
             InventoryState::Pending | InventoryState::Unavailable => {
-                self.observable.set_inventory(health, &[], &[]);
+                self.observable
+                    .set_inventory(health, &[], &[], self.hid_open_failures);
             }
         }
     }
@@ -703,11 +718,22 @@ impl Orchestrator {
     /// it into a single action for that app, dropping it from the OS-hook
     /// gesture set — so the gesture map is app-scoped too. The dedicated HID++
     /// gesture map is not app-scoped and stays untouched.
-    pub fn set_current_app(&mut self, bundle: Option<String>) {
-        if bundle == self.current_app {
-            return;
+    ///
+    /// Only the identifier decides whether any of that runs: an application
+    /// that merely changed its localized name resolves to the same bindings,
+    /// and republishing for it could restart a capture session (a plan's
+    /// divert set is part of its identity) over nothing. The observable cell
+    /// still gets the whole value — it dedupes on its own, and its recent list
+    /// is the only source a client has for these identifiers. Returns whether
+    /// the effective app identifier changed and active button lifecycles must
+    /// be canceled.
+    pub fn set_current_app(&mut self, app: Option<ForegroundApp>) -> bool {
+        let id = app.as_ref().map(|app| app.id.clone());
+        self.observable.set_foreground(app);
+        if id == self.current_app {
+            return false;
         }
-        self.current_app = bundle;
+        self.current_app = id;
         write_value(
             &self.shared.hook_maps,
             self.hook_maps_for(self.current_key(), self.current_app.as_deref()),
@@ -716,6 +742,7 @@ impl Orchestrator {
         // Capture plans are app-scoped (per-app binding overlays); republish
         // them with the keyboard's effective bindings.
         self.publish_device_runtime();
+        true
     }
 
     /// Replace the config (after `config.toml` changed) and rebuild everything.
@@ -1035,7 +1062,7 @@ fn is_hidpp_device(device: &AgentDevice) -> bool {
 }
 
 /// Replace the value behind an `RwLock`, logging (not panicking) on poison so a
-/// background thread that paniced while holding the lock can't take the agent
+/// background thread that panicked while holding the lock can't take the agent
 /// down — it just keeps the stale value until the next successful rebuild.
 fn write_value<T>(lock: &RwLock<T>, value: T, name: &str) {
     match lock.write() {

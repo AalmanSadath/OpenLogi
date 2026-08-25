@@ -407,7 +407,7 @@ pub struct StandaloneDevice {
     ///
     /// This is deliberately appended: `StandaloneDevice` crosses the
     /// append-only GUI↔agent bincode wire format.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub registry_model_id: Option<String>,
 }
 
@@ -571,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn every_driveable_lighting_family_earns_the_tab() {
+    fn every_drivable_lighting_family_earns_the_tab() {
         // `set_keyboard_color` walks 0x8070 → 0x8081 → 0x8080, so a keyboard
         // exposing any one of them can be coloured and must get the tab.
         // 0x8081 was missing here, which left such a keyboard with no lighting

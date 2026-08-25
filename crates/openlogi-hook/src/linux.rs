@@ -42,8 +42,8 @@ use x11rb::protocol::xproto::{Atom, AtomEnum, ConnectionExt as _, Window};
 use x11rb::rust_connection::RustConnection;
 
 use crate::{
-    ButtonId, CursorPosition, EventDisposition, HookError, HookEvent, LOGITECH_VENDOR_ID,
-    MouseEvent,
+    ButtonId, CursorPosition, EventDisposition, ForegroundApp, HookBackend, HookError, HookEvent,
+    LOGITECH_VENDOR_ID, MouseEvent,
 };
 
 /// Prefix carried by every uinput device OpenLogi creates — the hook's
@@ -67,50 +67,83 @@ pub(crate) struct HookInner {
     threads: Vec<thread::JoinHandle<()>>,
 }
 
-pub(crate) fn start(
-    cb: impl Fn(HookEvent) -> EventDisposition + Send + Sync + 'static,
-) -> Result<HookInner, HookError> {
-    let devices = find_mouse_devices();
-    if devices.is_empty() {
-        return Err(HookError::NoDeviceFound);
-    }
+/// The Linux backend: one `evdev` reader thread per mouse, re-injecting
+/// pass-through events through a `uinput` device.
+pub(crate) struct Backend;
 
-    let stop = Arc::new(AtomicBool::new(false));
-    let cb: Arc<dyn Fn(HookEvent) -> EventDisposition + Send + Sync> = Arc::new(cb);
-    let mut threads: Vec<thread::JoinHandle<()>> = Vec::with_capacity(devices.len());
-    let mut stop_pipes: Vec<OwnedFd> = Vec::with_capacity(devices.len());
+impl HookBackend for Backend {
+    type Running = HookInner;
 
-    let result = (|| -> io::Result<()> {
-        for (path, device) in devices {
-            let virtual_device = build_virtual_device(&device)?;
-            let (rx, tx) = create_pipe()?;
-            let stop_clone = Arc::clone(&stop);
-            let cb_clone = Arc::clone(&cb);
-            let handle = thread::Builder::new()
-                .name(format!("openlogi-hook:{}", path.display()))
-                .spawn(move || {
-                    device_thread(path, device, virtual_device, cb_clone, stop_clone, rx);
-                })?;
-            threads.push(handle);
-            stop_pipes.push(tx);
+    fn start(
+        cb: impl Fn(HookEvent) -> EventDisposition + Send + Sync + 'static,
+    ) -> Result<HookInner, HookError> {
+        let devices = find_mouse_devices();
+        if devices.is_empty() {
+            return Err(HookError::NoDeviceFound);
         }
-        Ok(())
-    })();
 
-    if let Err(e) = result {
-        shutdown(&stop, &stop_pipes, threads);
-        return Err(HookError::Linux(e));
+        let stop = Arc::new(AtomicBool::new(false));
+        let cb: Arc<dyn Fn(HookEvent) -> EventDisposition + Send + Sync> = Arc::new(cb);
+        let mut threads: Vec<thread::JoinHandle<()>> = Vec::with_capacity(devices.len());
+        let mut stop_pipes: Vec<OwnedFd> = Vec::with_capacity(devices.len());
+
+        let result = (|| -> io::Result<()> {
+            for (path, device) in devices {
+                let virtual_device = build_virtual_device(&device)?;
+                let (rx, tx) = create_pipe()?;
+                let stop_clone = Arc::clone(&stop);
+                let cb_clone = Arc::clone(&cb);
+                let handle = thread::Builder::new()
+                    .name(format!("openlogi-hook:{}", path.display()))
+                    .spawn(move || {
+                        device_thread(path, device, virtual_device, cb_clone, stop_clone, rx);
+                    })?;
+                threads.push(handle);
+                stop_pipes.push(tx);
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = result {
+            shutdown(&stop, &stop_pipes, threads);
+            return Err(HookError::Linux(e));
+        }
+
+        Ok(HookInner {
+            stop,
+            stop_pipes,
+            threads,
+        })
     }
 
-    Ok(HookInner {
-        stop,
-        stop_pipes,
-        threads,
-    })
-}
+    fn stop(inner: HookInner) {
+        shutdown(&inner.stop, &inner.stop_pipes, inner.threads);
+    }
 
-pub(crate) fn stop(inner: HookInner) {
-    shutdown(&inner.stop, &inner.stop_pipes, inner.threads);
+    /// Return the currently frontmost application, or `None` when unavailable.
+    /// Dispatches to the backend chosen at startup.
+    ///
+    /// On an X11 session the identifier is the `WM_CLASS` class component (e.g.
+    /// "Firefox"). On a Wayland session the wlr-foreign-toplevel or gnome-shell
+    /// backend is used when available; XWayland windows fall back to the X11
+    /// backend. No Linux source reports an application name separate from its
+    /// identifier, so the two are the same string here.
+    fn frontmost_app() -> Option<ForegroundApp> {
+        FRONTMOST_SOURCE
+            .frontmost_app_id()
+            .map(ForegroundApp::unnamed)
+    }
+
+    /// Read the global cursor position through X11 when an X server is available.
+    /// Native Wayland intentionally has no equivalent global-coordinate API.
+    fn cursor_position() -> Option<CursorPosition> {
+        let source = X11Source::connect()?;
+        let reply = source.conn.query_pointer(source.root).ok()?.reply().ok()?;
+        Some(CursorPosition {
+            x: f64::from(reply.root_x),
+            y: f64::from(reply.root_y),
+        })
+    }
 }
 
 fn shutdown(stop: &AtomicBool, pipes: &[OwnedFd], threads: Vec<thread::JoinHandle<()>>) {
@@ -501,7 +534,7 @@ fn device_thread(
     // Dropping `device` releases the exclusive grab, restoring normal input delivery.
 }
 
-// ── frontmost_bundle_id ──────────────────────────────────────────────────────
+// ── frontmost_app_id ─────────────────────────────────────────────────────────
 
 // The frontmost-app reader is backend-driven so that Wayland support can be
 // added without touching callers. Exactly one backend is selected at startup
@@ -515,7 +548,7 @@ mod wlr_foreign_toplevel;
 /// A backend that reports which application is currently frontmost.
 ///
 /// Implementations are display-server / desktop specific. The string returned
-/// by `frontmost_bundle_id` is compared against per-app profile keys by exact
+/// by `frontmost_app_id` is compared against per-app profile keys by exact
 /// match (`openlogi_core::Config::effective_bindings`), so its exact form
 /// matters and is backend-specific. The X11 and gnome-shell backends both
 /// return the `WM_CLASS` class component (e.g. "Firefox"); the wlr backend
@@ -528,7 +561,7 @@ mod wlr_foreign_toplevel;
 trait FrontmostSource: Send + Sync {
     /// Opaque identifier of the frontmost application, or `None` when there is
     /// no frontmost window or it cannot be read.
-    fn frontmost_bundle_id(&self) -> Option<String>;
+    fn frontmost_app_id(&self) -> Option<String>;
 
     /// Short backend identifier, for diagnostics / logging only.
     fn name(&self) -> &'static str;
@@ -568,7 +601,7 @@ impl X11Source {
 }
 
 impl FrontmostSource for X11Source {
-    fn frontmost_bundle_id(&self) -> Option<String> {
+    fn frontmost_app_id(&self) -> Option<String> {
         // _NET_ACTIVE_WINDOW on the root window holds the focused window's XID.
         let window: Window = self
             .conn
@@ -613,7 +646,7 @@ impl FrontmostSource for X11Source {
 struct NullSource;
 
 impl FrontmostSource for NullSource {
-    fn frontmost_bundle_id(&self) -> Option<String> {
+    fn frontmost_app_id(&self) -> Option<String> {
         None
     }
 
@@ -699,33 +732,12 @@ fn detect_frontmost_source() -> Box<dyn FrontmostSource> {
         }
     }
 
-    debug!("frontmost: no usable backend; frontmost_bundle_id will return None");
+    debug!("frontmost: no usable backend; frontmost_app_id will return None");
     Box::new(NullSource)
 }
 
 static FRONTMOST_SOURCE: LazyLock<Box<dyn FrontmostSource>> =
     LazyLock::new(detect_frontmost_source);
-
-/// Return an opaque identifier of the currently frontmost application, or
-/// `None` when unavailable. Dispatches to the backend chosen at startup.
-///
-/// On an X11 session this is the `WM_CLASS` class component (e.g. "Firefox").
-/// On a Wayland session the wlr-foreign-toplevel or gnome-shell backend is used
-/// when available; XWayland windows fall back to the X11 backend.
-pub(crate) fn frontmost_bundle_id() -> Option<String> {
-    FRONTMOST_SOURCE.frontmost_bundle_id()
-}
-
-/// Read the global cursor position through X11 when an X server is available.
-/// Native Wayland intentionally has no equivalent global-coordinate API.
-pub(crate) fn cursor_position() -> Option<CursorPosition> {
-    let source = X11Source::connect()?;
-    let reply = source.conn.query_pointer(source.root).ok()?.reply().ok()?;
-    Some(CursorPosition {
-        x: f64::from(reply.root_x),
-        y: f64::from(reply.root_y),
-    })
-}
 
 #[cfg(test)]
 mod tests {

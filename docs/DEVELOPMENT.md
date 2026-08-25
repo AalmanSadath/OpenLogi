@@ -6,8 +6,11 @@ build instructions, see the [README](../README.md).
 ## Toolchain
 
 - Stable Rust (Edition 2024, MSRV 1.98 — the floor tracks current stable)
-- macOS: Xcode 16+ with the optional **Metal Toolchain** component (required by
-  GPUI's `gpui_macos` build script to compile shaders)
+- macOS: Xcode 26+ with the optional **Metal Toolchain** component. The Metal
+  Toolchain is what GPUI's `gpui_macos` build script compiles shaders with; the
+  version floor is `actool`, which packaging uses to compile the app icon from
+  its Icon Composer document. `OPENLOGI_DEVELOPER_DIR` overrides which Xcode is
+  used when several are installed.
 - Linux: system libraries — on Debian/Ubuntu:
   `sudo apt-get install libudev-dev gcc g++ clang libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev pkg-config`
 - `create-dmg` for packaging (`brew install create-dmg`); `cargo-bundle` is
@@ -22,7 +25,7 @@ Nix/devenv is optional. A normal Rust toolchain is enough.
 ```sh
 # rustup installs the stable toolchain pinned in rust-toolchain.toml
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-# macOS: full Xcode 16+ with the Metal Toolchain (not only Command Line Tools)
+# macOS: full Xcode 26+ with the Metal Toolchain (not only Command Line Tools)
 # Linux: see system libraries under Toolchain above
 # optional helpers: brew install cmake create-dmg sccache
 git clone https://github.com/AprilNEA/OpenLogi
@@ -173,8 +176,8 @@ crates/
 ## Local CI
 
 The PR test pipeline is `.github/workflows/ci.yml`. To run every job this
-machine can reproduce — including MSRV, cargo-deny, and the Windows cross-lint
-the host-OS gate does not run:
+machine can reproduce — including typos, MSRV, cargo-deny, and the Windows
+cross-lint the host-OS gate does not run:
 
 ```sh
 cargo xtask ci
@@ -201,9 +204,9 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps \
 ```
 
 Equivalent to `devenv tasks run openlogi:check`. That is **not** the full
-pipeline: Linux clippy, Windows clippy, MSRV, cargo-deny, and the shell lint
-(shellcheck + shfmt) are separate CI jobs. Reproduce those with `cargo xtask ci` or the commands in
-`.claude/rules/ci.md`.
+pipeline: typos, Linux clippy, Windows clippy, MSRV, cargo-deny, and the shell
+lint (shellcheck + shfmt) are separate CI jobs. Reproduce those with
+`cargo xtask ci` or the commands in `.claude/rules/ci.md`.
 
 ## Packaging the macOS DMG
 
@@ -295,8 +298,9 @@ cargo run -p xtask -- release latest-json \
 `.github/workflows/crowdin.yml` syncs GUI locales with
 [Crowdin](https://crowdin.com/project/openlogi) and opens a `crowdin/i18n` PR
 when a **real** translation value improved — nightly, and on master pushes that
-touch English sources (`en.yml`), `crowdin.yml`, the Crowdin workflow, the merge
-script under `.github/scripts/i18n/`, or the shared GitHub App token action.
+touch English sources (`en.yml`), `.config/crowdin.yml`, the Crowdin workflow,
+the merge script under `.github/scripts/i18n/`, or the shared GitHub App token
+action.
 
 **How it helps translation**
 

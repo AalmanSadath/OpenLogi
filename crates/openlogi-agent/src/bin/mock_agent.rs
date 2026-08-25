@@ -37,6 +37,7 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt as _;
 use interprocess::local_socket::traits::tokio::Listener as _;
+use openlogi_core::app::ForegroundApp;
 use openlogi_core::binding::ActionRingSlot;
 use openlogi_core::config::SMARTSHIFT_AUTO_DISENGAGE_DEFAULT;
 use openlogi_core::config::{Config, Lighting};
@@ -55,9 +56,9 @@ use openlogi_hid::{
 use openlogi_ipc::transport;
 use openlogi_ipc::{
     ActionRingCommandError, ActionRingInvocation, Agent, AgentSnapshot, AgentStatus,
-    ConfigReloadError, FoundDevice, Generation, Identity, InventoryHealth, MonitorEvent,
-    OBSERVE_HOLD, Observation, PROTOCOL_VERSION, PairingCommandError, PairingFailure, PairingPhase,
-    PairingUpdate, RingObservation,
+    ConfigReloadError, ForegroundApps, FoundDevice, Generation, Identity, InventoryHealth,
+    MonitorEvent, OBSERVE_HOLD, Observation, PROTOCOL_VERSION, PairingCommandError, PairingFailure,
+    PairingPhase, PairingUpdate, RingObservation,
 };
 use succession::Compat;
 use tarpc::context::Context;
@@ -82,6 +83,19 @@ const DIRECT_PID: u16 = 0xb020;
 /// Product ID of the scripted standalone Litra light (Litra Glow).
 /// How often the scripted `camera_active` flag flips.
 const CAMERA_TOGGLE_PERIOD: Duration = Duration::from_secs(30);
+
+/// How often the scripted foreground application changes, so a client's
+/// per-app rendering has something switching under it.
+const FOREGROUND_SWITCH_PERIOD: Duration = Duration::from_secs(10);
+
+/// The applications the mock pretends the user is switching between, in the
+/// order it cycles them. Real macOS bundle identifiers, so a profile authored
+/// against the mock keeps working against a real agent.
+const SCRIPTED_APPS: [(&str, &str); 3] = [
+    ("com.apple.Safari", "Safari"),
+    ("com.microsoft.VSCode", "Code"),
+    ("com.apple.finder", "Finder"),
+];
 
 /// BTLE address of the scripted pairing candidate.
 const CANDIDATE_ADDRESS: [u8; 6] = [0xe0, 0x15, 0x27, 0x42, 0x91, 0x3a];
@@ -357,6 +371,31 @@ impl State {
         self.started.elapsed().as_secs() / CAMERA_TOGGLE_PERIOD.as_secs() % 2 == 1
     }
 
+    /// The scripted foreground application, plus the ones "recently" in front.
+    ///
+    /// Cycles [`SCRIPTED_APPS`] on a timer the way `camera_active` flips, so a
+    /// client can watch its per-app rendering follow an app switch with no
+    /// hardware and no real window server. `recent` is the cycle unrolled
+    /// backwards from the current position — the same newest-first,
+    /// deduplicated shape the real agent publishes.
+    fn foreground(&self) -> ForegroundApps {
+        let app = |(id, name): (&str, &str)| ForegroundApp {
+            id: id.to_string(),
+            display_name: name.to_string(),
+        };
+        let elapsed = self.started.elapsed().as_secs() / FOREGROUND_SWITCH_PERIOD.as_secs();
+        let position = usize::try_from(elapsed).unwrap_or(usize::MAX) % SCRIPTED_APPS.len();
+        let recent = (0..SCRIPTED_APPS.len())
+            .map(|back| {
+                app(SCRIPTED_APPS[(position + SCRIPTED_APPS.len() - back) % SCRIPTED_APPS.len()])
+            })
+            .collect();
+        ForegroundApps {
+            current: Some(app(SCRIPTED_APPS[position])),
+            recent,
+        }
+    }
+
     /// The inventory as polled. Rebuilt per call so the online mouse's battery
     /// is re-derived from elapsed time: successive snapshots visibly differ and
     /// the GUI's poll → repaint loop can be watched working.
@@ -429,10 +468,7 @@ fn standalone_light() -> StandaloneDevice {
             zones: false,
         }),
         driver_id: "litra".to_string(),
-        // Must stay `Some` until #571 is fixed: `registry_model_id` is
-        // `skip_serializing_if`, which truncates the bincode stream when it is
-        // `None` and makes the whole snapshot undecodable. `8c900` is also the
-        // real registry id for a Litra Glow, so the asset lookup resolves.
+        // `8c900` is the real registry id for a Litra Glow, so the asset lookup resolves.
         registry_model_id: Some("8c900".to_string()),
     }
 }
@@ -629,6 +665,8 @@ fn agent_status() -> AgentStatus {
         // The "-mock" marker shows up anywhere the GUI displays the agent
         // version, so a mock session can't be mistaken for a live one.
         agent_version: concat!(env!("CARGO_PKG_VERSION"), "-mock").to_string(),
+        input_monitoring_granted: true,
+        hid_open_failures: false,
     }
 }
 
@@ -678,6 +716,7 @@ fn snapshot_of(state: &State) -> AgentSnapshot {
         standalone: vec![standalone_light()],
         camera_active: state.camera_active(),
         pairing: state.phase.clone(),
+        foreground: state.foreground(),
     }
 }
 

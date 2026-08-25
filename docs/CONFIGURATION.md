@@ -52,10 +52,18 @@ Common device fields are:
 
 - `enabled`, `dpi`, `dpi_presets`, thumb-wheel sensitivity, scroll inversion,
   and scroll resolution
-- `bindings`: a button maps either to one action or to a gesture-direction map
+- `bindings`: a button maps either to one action or to a gesture-direction map.
+  `Thumbwheel` is the thumb wheel's capacitive tap — it has no GUI control and
+  stays inert unless bound here, because the wheel reports taps from incidental
+  thumb contact as well as from deliberate ones
 - `per_app_bindings`: sparse action overlays keyed by macOS bundle id, Linux
   application id, exact lower-cased Windows executable path, or
-  `exe:<filename>.exe`
+  `exe:<filename>.exe`. The Buttons panel edits these under its Profile
+  selector, which offers applications the agent has seen in front — the only
+  identifiers guaranteed to match, since the four platforms name applications
+  differently and a profile authored under one namespace will not match under
+  another. An overlay holds one action per button; gesture-direction maps live
+  in `bindings`
 - `action_ring`: default and complete per-application eight-slot layouts
 - `lighting`, `smartshift`, standalone `light`, and camera controls / profiles
 - `host_switch_targets` and `fn_lock` for compatible keyboards

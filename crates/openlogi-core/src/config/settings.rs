@@ -1,6 +1,6 @@
 //! App-wide and per-device *value* settings: [`AppSettings`], [`Appearance`],
-//! [`Lighting`], [`ScrollResolution`], [`WheelMode`] / [`SmartShift`], and
-//! the legacy [`GestureOwner`], plus their serde helpers.
+//! [`UiScale`], [`AppIcon`], [`Lighting`], [`ScrollResolution`], [`WheelMode`] /
+//! [`SmartShift`], and the legacy [`GestureOwner`], plus their serde helpers.
 
 use std::collections::BTreeMap;
 
@@ -26,6 +26,76 @@ pub enum Appearance {
     Light,
     /// Always use the dark variant of the selected theme.
     Dark,
+}
+
+/// User-selected scale for text and rem-based interface spacing.
+///
+/// The core stores a semantic choice rather than GPUI pixels; the desktop maps
+/// each variant's percentage onto the window's rem size. Keeping the supported
+/// range finite lets every layout be verified at every scale.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiScale {
+    /// 90% of the standard interface size.
+    Small,
+    /// The standard interface size.
+    #[default]
+    Normal,
+    /// 110% of the standard interface size.
+    Large,
+    /// 125% of the standard interface size.
+    ExtraLarge,
+}
+
+impl UiScale {
+    /// Every supported scale, in the order Settings offers them.
+    pub const ALL: [Self; 4] = [Self::Small, Self::Normal, Self::Large, Self::ExtraLarge];
+
+    /// The displayed percentage for this scale.
+    #[must_use]
+    pub const fn percent(self) -> u16 {
+        match self {
+            Self::Small => 90,
+            Self::Normal => 100,
+            Self::Large => 110,
+            Self::ExtraLarge => 125,
+        }
+    }
+}
+
+/// Which icon the app wears.
+///
+/// Variant names are one string doing three jobs, and all three are part of a
+/// contract: the value persisted in `config.toml`, the file each alternate
+/// ships as inside the macOS bundle, and the name the build compiles its source
+/// document under. Renaming one renames all three.
+///
+/// Platform-free, like [`Appearance`]: honouring it is the frontend's business,
+/// and today only macOS can — Windows embeds its icon in the executable at
+/// compile time and Linux installs a fixed one from the package.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, strum::Display)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum AppIcon {
+    /// The icon the app is signed with, and the one it wears until a user picks
+    /// another.
+    #[default]
+    Openlogi,
+    /// The geometric mark on a faceted, light-refracting fill.
+    Prism,
+}
+
+impl AppIcon {
+    /// Every icon, in the order Settings offers them.
+    pub const ALL: [Self; 2] = [Self::Openlogi, Self::Prism];
+
+    /// Whether this is the icon the installed bundle already wears — the one
+    /// case a frontend applies by clearing its override rather than by handing
+    /// the system a file.
+    #[must_use]
+    pub fn is_default(self) -> bool {
+        matches!(self, Self::Openlogi)
+    }
 }
 
 /// Preferred source for on-demand device assets.
@@ -104,6 +174,14 @@ pub struct AppSettings {
     /// Takes effect on agent restart.
     #[serde(default = "default_true")]
     pub capture_mouse_events: bool,
+    /// Which app icon the user picked. Applied at launch, and whenever it
+    /// changes, by whichever process owns a surface showing one — on macOS the
+    /// GUI hands the choice to the Dock and writes it onto the bundle (so the
+    /// icon survives a quit), and the agent restyles the menu-bar item, which
+    /// is its own glyph and no one else's to set. Elsewhere it is inert.
+    /// Defaults to the icon the app is signed with.
+    #[serde(default)]
+    pub app_icon: AppIcon,
     /// Whether the GUI automatically downloads device images from
     /// `assets.openlogi.org` when a device appears. `true` (default) keeps
     /// the current behavior; `false` makes no asset network requests at all
@@ -138,6 +216,9 @@ pub struct AppSettings {
     /// Light/dark appearance preference. Defaults to following the OS.
     #[serde(default)]
     pub appearance: Appearance,
+    /// Text and rem-based interface scale. Defaults to 100%.
+    #[serde(default)]
+    pub ui_scale: UiScale,
     /// Name of the theme used in light mode (a [`crate`]-agnostic string
     /// matching a gpui-component theme, e.g. `"OpenLogi Light"`). `None` uses
     /// the OpenLogi brand light theme.
@@ -264,6 +345,8 @@ impl Default for AppSettings {
             language: None,
             thumbwheel_sensitivity: ThumbwheelSensitivity::DEFAULT,
             appearance: Appearance::System,
+            ui_scale: UiScale::Normal,
+            app_icon: AppIcon::Openlogi,
             theme_light: None,
             theme_dark: None,
             ui_radius: None,

@@ -30,6 +30,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 
 use bincode::Options;
+use openlogi_core::app::ForegroundApp;
 use openlogi_core::binding::{ActionRingIcon, ActionRingSlot};
 use openlogi_core::config::Lighting;
 use openlogi_core::device::{
@@ -44,9 +45,9 @@ use openlogi_core::hid::{
 };
 use openlogi_ipc::{
     ActionRingCommandError, ActionRingInvocation, ActionRingPresentation, AgentRequest,
-    AgentSnapshot, AgentStatus, ConfigReloadError, FoundDevice, Identity, InventoryHealth,
-    MonitorEvent, Observation, PROTOCOL_VERSION, PairingCommandError, PairingFailure, PairingPhase,
-    PairingUpdate, RingObservation,
+    AgentSnapshot, AgentStatus, ConfigReloadError, ForegroundApps, FoundDevice, Identity,
+    InventoryHealth, MonitorEvent, Observation, PROTOCOL_VERSION, PairingCommandError,
+    PairingFailure, PairingPhase, PairingUpdate, RingObservation,
 };
 use succession::{Compat, Run};
 
@@ -63,11 +64,26 @@ fn wire_bytes<T: serde::Serialize>(value: &T) -> String {
 }
 
 #[track_caller]
-fn assert_wire<T: serde::Serialize>(value: &T, golden: &str) {
+fn assert_wire<T>(value: &T, golden: &str)
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug,
+{
+    let hex = wire_bytes(value);
     assert_eq!(
-        wire_bytes(value),
-        golden,
+        hex, golden,
         "wire encoding changed — if intentional, bump PROTOCOL_VERSION and regenerate this golden"
+    );
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("valid hex"))
+        .collect::<Vec<u8>>();
+    let decoded: T = bincode::DefaultOptions::new()
+        .deserialize(&bytes)
+        .expect("wire types deserialize");
+    let re_hex = wire_bytes(&decoded);
+    assert_eq!(
+        hex, re_hex,
+        "wire round-trip failed — re-encoded bytes differ"
     );
 }
 
@@ -85,7 +101,7 @@ fn representative_smartshift_status() -> SmartShiftStatus {
 /// that makes that visible in the same diff.
 #[test]
 fn protocol_version_is_pinned() {
-    assert_eq!(PROTOCOL_VERSION, 23);
+    assert_eq!(PROTOCOL_VERSION, 27);
 }
 
 #[test]
@@ -255,8 +271,10 @@ fn agent_status() {
         // the version must not churn this golden.
         protocol_version: 7,
         agent_version: "0.6.6".into(),
+        input_monitoring_granted: true,
+        hid_open_failures: false,
     };
-    assert_wire(&status, "010001010705302e362e36");
+    assert_wire(&status, "010001010705302e362e360100");
 
     assert_wire(&InventoryHealth::Scanning, "00");
     assert_wire(&InventoryHealth::Ready, "01");
@@ -273,20 +291,46 @@ fn agent_snapshot() {
             inventory: InventoryHealth::Ready,
             protocol_version: 7,
             agent_version: "0.6.6".into(),
+            input_monitoring_granted: true,
+            hid_open_failures: false,
         },
         inventory: Vec::new(),
         standalone: Vec::new(),
         camera_active: false,
         pairing: None,
+        // Pinned on its own in `foreground_apps` below, like the inventory and
+        // pairing fields.
+        foreground: ForegroundApps::default(),
     };
-    assert_wire(&snapshot, "010001010705302e362e3600000000");
+    assert_wire(&snapshot, "010001010705302e362e360100000000000000");
 
     // The observation is the snapshot with its generation in front.
     let observed = Observation {
         generation: 3,
         snapshot,
     };
-    assert_wire(&observed, "03010001010705302e362e3600000000");
+    assert_wire(&observed, "03010001010705302e362e360100000000000000");
+}
+
+/// The foreground application rides the snapshot, so both halves are pinned:
+/// the `None`/empty resting shape and a populated one.
+#[test]
+fn foreground_apps() {
+    assert_wire(&ForegroundApps::default(), "0000");
+
+    let safari = ForegroundApp {
+        id: "com.apple.Safari".into(),
+        display_name: "Safari".into(),
+    };
+    assert_wire(&safari, "10636f6d2e6170706c652e53616661726906536166617269");
+
+    assert_wire(
+        &ForegroundApps {
+            current: Some(safari.clone()),
+            recent: vec![safari],
+        },
+        "0110636f6d2e6170706c652e536166617269065361666172690110636f6d2e6170706c652e53616661726906536166617269",
+    );
 }
 
 /// The pairing session is state, so its phases are wire format like any enum.
@@ -511,7 +555,7 @@ fn standalone_light_dtos_commands_and_errors() {
     legacy.registry_model_id = None;
     assert_wire(
         &legacy,
-        "fb6d04fb00c9fb43fffb02020d73657269616c3a676c6f772d310a4c6974726120476c6f7701044c6f67690106676c6f772d31000000000d010001010114fa010101fb8c0afb641964020000056c69747261",
+        "fb6d04fb00c9fb43fffb02020d73657269616c3a676c6f772d310a4c6974726120476c6f7701044c6f67690106676c6f772d31000000000d010001010114fa010101fb8c0afb641964020000056c6974726100",
     );
     assert_wire(&capabilities, "010114fa010101fb8c0afb641964020000");
     assert_wire(&brightness, "14fa0101");

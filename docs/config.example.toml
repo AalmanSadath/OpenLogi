@@ -1,5 +1,5 @@
 # OpenLogi configuration example. Copy only the sections you need.
-schema_version = 4
+schema_version = 5
 selected_device = "receiver:aabbccdd:slot:1"
 
 [app_settings]
@@ -13,6 +13,9 @@ asset_source = "automatic"
 language = "en"
 thumbwheel_sensitivity = 14
 appearance = "system"
+ui_scale = "normal"
+# macOS only: "openlogi" (the signed icon) or "prism".
+app_icon = "openlogi"
 
 [devices."receiver:aabbccdd:slot:1"]
 dpi = 1600
@@ -24,6 +27,9 @@ scroll_resolution = "high"
 [devices."receiver:aabbccdd:slot:1".bindings]
 Back = "BrowserBack"
 Forward = "BrowserForward"
+# The thumb wheel's capacitive tap. Inert unless set here; the wheel also
+# reports taps from incidental thumb contact.
+Thumbwheel = "AppExpose"
 
 [devices."receiver:aabbccdd:slot:1".bindings.GestureButton]
 Click = "MissionControl"

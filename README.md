@@ -10,7 +10,6 @@
 <h1 align="center">OpenLogi</h1>
 <p align="center"><strong>⚡️ A native, local-first alternative to Logitech Options+, written in Rust 🦀<br/>Unlock the full capabilities of Logitech mice, keyboards, and webcams over HID++ and UVC</strong></p>
 
-
 <div align="center">
     <a href="https://twitter.com/AprilNEA" target="_blank">
     <img alt="twitter" src="https://img.shields.io/badge/follow-AprilNEA-green?style=social&logo=Twitter"></a>
@@ -26,6 +25,12 @@
 <p align="center">
     <a href="https://trendshift.io/repositories/42303" target="_blank">
     <img src="https://trendshift.io/api/badge/repositories/42303" alt="AprilNEA%2FOpenLogi | Trendshift" width="250" height="55"/></a>
+    <a href="https://www.producthunt.com/products/openlogi?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-openlogi" target="_blank" rel="noopener noreferrer">
+    <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=openlogi&amp;theme=dark&amp;period=daily">
+        <source media="(prefers-color-scheme: light)" srcset="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=openlogi&amp;theme=light&amp;period=daily">
+        <img alt="OpenLogi - A local-first alternative to Logitech Options+ | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/top-post-badge.svg?post_id=openlogi&amp;theme=light&amp;period=daily">
+    </picture></a>
 </p>
 
 > **Fed up with Options+? Try OpenLogi.**
@@ -69,7 +74,7 @@ Things OpenLogi does that Options+ won't:
 
 - Any Logitech UVC webcam (Brio, StreamCam, the C920 series, …), plug and play
 - Live preview that opens the camera only while you watch — leaving it releases the camera entirely and the LED goes off
-- Image controls written straight to the UVC hardware — zoom, focus, exposure, brightness, contrast, saturation, sharpness, white balance, tint, with auto-mode toggles for focus / exposure / white balance — so changes apply in Meet / Zoom / OBS and every other app using the camera
+- Image controls written straight to the UVC hardware — zoom, focus, exposure, brightness, contrast, saturation, sharpness, white balance, tint, anti-flicker, and low-light compensation, with auto-mode toggles for focus / exposure / white balance — so changes apply in Meet / Zoom / OBS and every other app using the camera
 - One-click profiles: built-in Default / Streaming / Video call plus custom snapshots; settings persist per camera and are written back to the hardware on the next view
 
 ¹ Media key actions use D-Bus MPRIS on Linux; a handful of macOS-specific actions have no universal Linux equivalent and are no-ops. Windows maps platform actions to native equivalents where available.
@@ -120,6 +125,7 @@ sudo pacman -U openlogi-*.pkg.tar.zst
 ```
 
 Packages are published for both `x86_64`/`amd64` and `arm64`/`aarch64`.
+Pre-built packages require GLIBC 2.35 or newer (Ubuntu 22.04 baseline).
 
 NixOS users can instead import the repository's module, which installs the
 package and udev rules and starts the agent with the graphical session:

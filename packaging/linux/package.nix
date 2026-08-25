@@ -28,6 +28,7 @@
   rustPlatform,
   fetchgit,
   src,
+  git,
   pkg-config,
   patchelf,
   versionCheckHook,
@@ -51,7 +52,7 @@ let
       (src + "/LICENSE-APACHE")
       (src + "/LICENSE-MIT")
       (src + "/crates")
-      (src + "/design/icon/openlogi.png")
+      (src + "/design/icon")
       (src + "/docs/config.example.toml")
       (src + "/packaging/linux/desktop")
       (src + "/packaging/linux/systemd")
@@ -85,8 +86,8 @@ let
   # at a separate checkout. The rev must match Cargo.lock (a mismatch fails
   # the build with a hash error, so it cannot drift silently); the hash is
   # shared with outputHashes below.
-  gpuiComponentRev = "031555662e99a1b5a549990b47f246d475b8288a";
-  gpuiComponentHash = "sha256-yOXdgxQgfvGN2/+OdDnl1pYti0DoGFvS3Tyqvj3Bkng=";
+  gpuiComponentRev = "da4f93696dc2b2b4d91bcc42412b9053a3d24de8";
+  gpuiComponentHash = "sha256-A5NitDokr5+8tQaSO6gSyQpH3X/8FWQHC140CHnpVsY=";
   gpuiComponentSrc = fetchgit {
     url = "https://github.com/longbridge/gpui-component";
     rev = gpuiComponentRev;
@@ -107,10 +108,12 @@ rustPlatform.buildRustPackage {
     # Obtain new values from the error message of a failing build, or with
     # `nix-prefetch-git <url> --rev <rev>`.
     outputHashes = {
-      "gpui-0.2.2" = "sha256-Av+unZNI39dEb+zwSIU+SkEjqagHWrc7W8KehEgQ4H8=";
+      "appicon-0.1.0" = "sha256-XY8NS2qrpPbUXZ3xCPGjZbbT0tSVpapbcTbgA2H5+/I=";
+      "gpui-0.2.2" = "sha256-d2GVmZgvJzLk1pbNtPedw0V09+ANZFORZjTSLVxw7jc=";
       "gpui-component-0.5.2" = gpuiComponentHash;
       "gpui-updater-0.0.7" = "sha256-hxdATcCif7csqKLNoi41ETe09Ym6zM4rVzYvBDEvVg4=";
       "proptest-1.10.0" = "sha256-p5NTcHhruI8QQvANACg8AMRVNmuvGxs2NLit+/8PaWo=";
+      "wasm_thread-0.3.3" = "sha256-+lRLCIk0S6Y5ORYjDKsYYHia2FtoSoh+rWkQh7mnPBE=";
       "zed-font-kit-0.14.1-zed" = "sha256-KXygi0olNQi5yM8eaJVykNDtbPMDjT+cWPBF8UrtXR4=";
       "zed-reqwest-0.12.15-zed" = "sha256-p4SiUrOrbTlk/3bBrzN/mq/t+1Gzy2ot4nso6w6S+F8=";
       "zed-scap-0.0.8-zed" = "sha256-BihiQHlal/eRsktyf0GI3aSWsUCW7WcICMsC2Xvb7kw=";
@@ -139,6 +142,11 @@ rustPlatform.buildRustPackage {
     patchelf
     rustPlatform.bindgenHook # `media` (a gpui dep) runs bindgen — needs libclang
   ];
+
+  # The xtask release tests exercise version-bump checkout against throwaway
+  # repositories they `git init` themselves, so the sandboxed `cargo test`
+  # needs a git binary even though the build does not.
+  nativeCheckInputs = [ git ];
 
   # Only libraries whose *-sys crates appear in Cargo.lock. TLS is rustls and
   # evdev/hidraw are opened directly. Runtime-selected graphics libraries also
@@ -183,8 +191,15 @@ rustPlatform.buildRustPackage {
 
     install -Dm644 packaging/linux/desktop/openlogi.desktop \
       "$out/share/applications/openlogi.desktop"
+    # Every standard indexed hicolor size: a stock `hicolor/index.theme`
+    # stops at 512x512, so an icon installed only under `1024x1024/apps` is
+    # invisible to launchers that resolve by theme index.
     install -Dm644 design/icon/openlogi.png \
       "$out/share/icons/hicolor/1024x1024/apps/openlogi.png"
+    for size in 512 256 128 64 48 32 16; do
+      install -Dm644 "design/icon/openlogi-$size.png" \
+        "$out/share/icons/hicolor/''${size}x''${size}/apps/openlogi.png"
+    done
     install -Dm644 packaging/linux/udev/70-openlogi.rules \
       "$out/lib/udev/rules.d/70-openlogi.rules"
     install -Dm644 packaging/linux/systemd/openlogi-agent.service \
@@ -213,7 +228,9 @@ rustPlatform.buildRustPackage {
     test ! -e "$out/bin/openlogi-agent-mock"
     test -f "$out/lib/udev/rules.d/70-openlogi.rules"
     test -f "$out/share/applications/openlogi.desktop"
-    test -f "$out/share/icons/hicolor/1024x1024/apps/openlogi.png"
+    for size in 1024 512 256 128 64 48 32 16; do
+      test -f "$out/share/icons/hicolor/''${size}x''${size}/apps/openlogi.png"
+    done
     grep -Fqx \
       "ExecStart=$out/bin/openlogi-agent" \
       "$out/share/systemd/user/openlogi-agent.service"

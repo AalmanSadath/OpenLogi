@@ -3,7 +3,7 @@
 use super::AppState;
 use gpui::App;
 use openlogi_core::config::{
-    AppSettings, Appearance, AssetSourcePreference, ThumbwheelSensitivity,
+    AppIcon, AppSettings, Appearance, AssetSourcePreference, ThumbwheelSensitivity, UiScale,
 };
 
 impl AppState {
@@ -76,6 +76,15 @@ impl AppState {
         self.config.app_settings.appearance = appearance;
         self.persist_config("appearance setting");
     }
+    /// Persist the text and interface scale. Open window roots apply the new
+    /// rem size when the caller refreshes them. No-op when unchanged.
+    pub fn set_ui_scale(&mut self, scale: UiScale) {
+        if self.config.app_settings.ui_scale == scale {
+            return;
+        }
+        self.config.app_settings.ui_scale = scale;
+        self.persist_config("UI scale setting");
+    }
     /// Persist the chosen theme name for one mode (`None` = the OpenLogi brand
     /// theme). No-op when unchanged.
     pub fn set_theme(&mut self, dark: bool, name: Option<String>) {
@@ -89,6 +98,23 @@ impl AppState {
         }
         *slot = name;
         self.persist_config("theme setting");
+    }
+    /// Persist the chosen app icon and wear it now. Unlike the theme settings
+    /// this one leaves the process twice over: the icon is written onto the app
+    /// bundle so it survives a quit, and the agent is told so it can restyle the
+    /// menu-bar item — the one surface showing an icon that the GUI cannot
+    /// reach. No-op when unchanged.
+    pub fn set_app_icon(&mut self, icon: AppIcon) {
+        if self.config.app_settings.app_icon == icon {
+            return;
+        }
+        self.config.app_settings.app_icon = icon;
+        // Only wear what the config kept: a failed write rolls the setting
+        // back, and an icon applied over that would outlive the choice it came
+        // from — Finder would show one thing and Settings another.
+        if self.persist_and_reload("app icon setting") {
+            crate::platform::app_icon::apply(icon);
+        }
     }
     /// Persist the UI corner-radius override (`None` = each theme's own radius).
     /// No-op when unchanged.
@@ -203,6 +229,7 @@ impl AppState {
         self.config.app_settings.language = language;
         self.persist_config("language setting");
         openlogi_ui::locale::activate(self.config.app_settings.language.as_deref());
+        // Locale lookup is process-global, so every open window must repaint.
         cx.refresh_windows();
         crate::app::menu::rebuild(cx);
     }

@@ -5,6 +5,7 @@ use super::{
     any_device_needs_capture_rearm, build_devices, configured_wheel_mode, host_switch_links,
     pick_current, plan_reapply, reapply_targets,
 };
+use openlogi_core::app::ForegroundApp;
 use openlogi_core::binding::{Action, ButtonId};
 use openlogi_core::config::{Config, LightSettings, ScrollResolution};
 use openlogi_core::device::{
@@ -218,6 +219,7 @@ fn runtime_selection_tracks_online_transition_without_device_set_change() {
             direct_inventory_state(0xb034, None, [2, 0, 0, 0], false),
         ],
         &[],
+        false,
     );
     assert_eq!(orchestrator.current_key(), Some(saved_key));
 
@@ -227,6 +229,7 @@ fn runtime_selection_tracks_online_transition_without_device_set_change() {
             direct_inventory_state(0xb034, None, [2, 0, 0, 0], true),
         ],
         &[],
+        false,
     );
     assert_eq!(orchestrator.current_key(), Some(other_key));
 }
@@ -518,7 +521,7 @@ fn plan_reapply_skips_a_followup_that_went_offline() {
 fn empty_refresh_marks_inventory_ready() {
     let mut orch = orchestrator(Config::default());
     assert_eq!(orch.inventory_health(), InventoryHealth::Scanning);
-    orch.refresh_inventory(&[], &[]);
+    orch.refresh_inventory(&[], &[], false);
     assert_eq!(orch.inventory_health(), InventoryHealth::Ready);
 }
 
@@ -531,7 +534,7 @@ fn unavailable_only_downgrades_a_pending_inventory() {
     let mut orch = orchestrator(Config::default());
     orch.mark_inventory_unavailable();
     assert_eq!(orch.inventory_health(), InventoryHealth::Unavailable);
-    orch.refresh_inventory(&[], &[]);
+    orch.refresh_inventory(&[], &[], false);
     assert_eq!(orch.inventory_health(), InventoryHealth::Ready);
     orch.mark_inventory_unavailable();
     assert_eq!(orch.inventory_health(), InventoryHealth::Ready);
@@ -553,7 +556,11 @@ fn every_inventory_mutator_republishes_what_the_ipc_server_answers() {
         InventoryHealth::Unavailable
     );
 
-    orch.refresh_inventory(&[direct_inventory(Some("serial-1"), [1, 2, 3, 4])], &[]);
+    orch.refresh_inventory(
+        &[direct_inventory(Some("serial-1"), [1, 2, 3, 4])],
+        &[],
+        false,
+    );
     let published = observable.snapshot();
     assert_eq!(published.status.inventory, InventoryHealth::Ready);
     assert_eq!(published.inventory, orch.inventory());
@@ -766,6 +773,6 @@ fn app_switch_republishes_capture_plans() {
         Some(Action::Undo),
         "no per-app overlay while no app is in front"
     );
-    orch.set_current_app(Some("com.example.editor".into()));
+    orch.set_current_app(Some(ForegroundApp::unnamed("com.example.editor".into())));
     assert_eq!(published_back_binding(&orch), Some(Action::Undo));
 }

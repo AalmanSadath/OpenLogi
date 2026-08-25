@@ -47,18 +47,16 @@ impl AppState {
     /// the previously-selected device disappeared, the selection falls back
     /// to index 0. Returns whether anything actually changed.
     ///
-    /// No-op (returning `false`) when the new list has the same `config_key`
-    /// sequence as the current one — the caller skips the window refresh, and
-    /// quiet polling cycles cause no spurious re-renders (P1.6). `force`
-    /// pushes through that early-return: the records embed resolved asset
-    /// paths, so a completed asset sync needs one rebuild even though the
-    /// device *set* is unchanged.
+    /// No-op (returning `false`) when the rebuilt list equals the current one,
+    /// so the caller skips the window refresh. The comparison is whole-record,
+    /// which is what lets every input tier — the agent snapshot, the camera
+    /// scan, and the asset cache — share one rebuild path without any of them
+    /// needing to announce which fields it might have touched.
     pub fn refresh_inventories(
         &mut self,
         inventories: &[DeviceInventory],
         standalone: &[StandaloneDevice],
         cache: &AssetResolver,
-        force: bool,
         cameras: &[openlogi_camera::Camera],
     ) -> bool {
         let new_list = build_device_list(inventories, standalone, cache, &self.config, cameras);
@@ -69,29 +67,13 @@ impl AppState {
         if persist_identities(&mut self.config, &merged_list) {
             self.persist_config("device identity");
         }
-        // Compare more than config_key: a device can reconnect on a new HID++
-        // index while keeping its physical config key, and the fresh route must
-        // replace the stale one so reads/writes don't target a dead index.
-        // `online` and `capabilities` are compared too, so a device waking up or
-        // a probe that resolves its feature table on a stable route still
-        // refreshes the carousel (and its config panels) instead of being
-        // swallowed by this guard.
-        let unchanged = merged_list.len() == self.device_list.len()
-            && merged_list
-                .iter()
-                .zip(self.device_list.iter())
-                .all(|(a, b)| {
-                    a.config_key == b.config_key
-                        && a.capture_id == b.capture_id
-                        && a.route == b.route
-                        && a.online == b.online
-                        && a.capabilities == b.capabilities
-                        && a.light_capabilities == b.light_capabilities
-                        && a.driver_id == b.driver_id
-                        && a.registry_model_id == b.registry_model_id
-                        && a.kind == b.kind
-                });
-        if unchanged && !force {
+        // Whole-record equality, not a field allowlist. Every field of a
+        // `DeviceRecord` is rendered somewhere, so any of them differing is a
+        // real change; an allowlist silently drops the fields nobody thought to
+        // add — `battery` and the resolved `asset` were both being swallowed
+        // here. Structural comparison also makes the guard immune to new
+        // fields, which is what an allowlist can never be.
+        if merged_list == self.device_list {
             return false;
         }
 
@@ -110,8 +92,8 @@ impl AppState {
             "inventory refreshed"
         );
 
-        // A device that came back on a different route must re-discover DPI —
-        // its cached status/attempts were keyed to the now-dead route.
+        // A device that came back on a different route must re-run its device
+        // queries — their subscriptions targeted the now-dead route.
         let rerouted: Vec<DeviceKey> = merged_list
             .iter()
             .filter(|new| {
@@ -124,27 +106,25 @@ impl AppState {
 
         self.device_list = merged_list;
         for key in &rerouted {
-            self.reads.dpi.remove(key);
-            self.reads.smartshift.remove(key);
+            self.reads.remove(key);
             if let Some(entry) = self.device_ui.get_mut(key) {
                 entry.smartshift_pending_confirm = None;
                 entry.smartshift_write_status = None;
             }
         }
-        let present = |key: &str| {
-            self.device_list
-                .iter()
-                .any(|r| r.config_key.as_str() == key)
-        };
-        self.reads.dpi.retain_present(present);
-        self.reads.smartshift.retain_present(present);
+        let present: HashSet<_> = self
+            .device_list
+            .iter()
+            .map(|record| record.config_key.as_str())
+            .collect();
+        self.reads.retain_present(|key| present.contains(key));
         self.current_device = new_index;
         // The active device may have changed (selection fell back to index 0
         // when the previous one vanished); re-seed the displayed DPI so it
         // tracks the now-current device rather than the old one.
         self.dpi = self.dpi_for_current();
         self.button_bindings = self.bindings_for_current();
-        self.gesture_bindings = self.current_gesture_maps();
+        self.gesture_bindings = self.device_gesture_maps();
         // Display state only — the agent runs its own inventory watcher and
         // rebuilds the live binding/DPI maps itself.
         true
@@ -304,10 +284,10 @@ impl AppState {
         // A device left in `Failed` (transient read errors exhausted its retry
         // budget) gets one fresh attempt each time it is re-selected.
         if let Some(key) = self.current_record().map(DeviceRecord::device_key) {
-            if matches!(self.reads.dpi.get(&key), Some(Load::Failed(_))) {
-                self.reads.dpi.retry(&key);
+            if matches!(self.reads.dpi_load(&key), Some(Load::Failed(_))) {
+                self.reads.retry_dpi(&key);
             }
-            if matches!(self.reads.smartshift.get(&key), Some(Load::Failed(_))) {
+            if matches!(self.reads.smartshift_load(&key), Some(Load::Failed(_))) {
                 self.retry_smartshift(&key);
             }
         }
@@ -316,7 +296,7 @@ impl AppState {
         // device's number until a fresh read lands.
         self.dpi = self.dpi_for_current();
         self.button_bindings = self.bindings_for_current();
-        self.gesture_bindings = self.current_gesture_maps();
+        self.gesture_bindings = self.device_gesture_maps();
         let Some(key) = self
             .current_record()
             .and_then(DeviceRecord::persistent_config_key)
