@@ -76,6 +76,13 @@ fn main() -> Result<()> {
                     for handle in cx.windows() {
                         let _ = handle.update(cx, |_, window, _| window.remove_window());
                     }
+                    #[cfg_attr(
+                        windows,
+                        expect(
+                            unused_mut,
+                            reason = "only the Wayland placement drains its openings"
+                        )
+                    )]
                     let mut placement = match RingPlacement::capture(cx) {
                         Ok(placement) => placement,
                         Err(error) => {

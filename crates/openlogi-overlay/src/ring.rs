@@ -57,6 +57,10 @@ pub(crate) enum Placement {
     /// The window was opened at the cursor, so the panel fills it.
     Window,
     /// The window covers a display. `center` stays empty until that window hears the pointer.
+    #[cfg_attr(
+        all(windows, not(test)),
+        expect(dead_code, reason = "only Wayland covers a display")
+    )]
     AtPointer { center: Option<Point<Pixels>> },
 }
 
