@@ -263,7 +263,7 @@ mod tests {
         use openlogi_ui::action_icons::ActionIcons;
 
         let combo = || "Ctrl+A".parse().expect("Ctrl+A is a valid combo");
-        let uncatalogued = [
+        let uncataloged = [
             Action::SetDpiPreset(0),
             Action::CustomShortcut(combo()),
             Action::HoldShortcut(combo()),
@@ -276,7 +276,7 @@ mod tests {
                 ApplicationTarget::new("/usr/bin/true", "true").expect("non-empty path"),
             ),
         ];
-        for action in Action::catalog().into_iter().chain(uncatalogued) {
+        for action in Action::catalog().into_iter().chain(uncataloged) {
             let path = action_icon_path(&action);
             assert!(
                 matches!(ActionIcons.load(path), Ok(Some(_))),
