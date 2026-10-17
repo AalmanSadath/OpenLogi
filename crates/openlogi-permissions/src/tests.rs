@@ -1,66 +1,55 @@
-//! Pure `classify` cases — no device nodes involved.
+//! Pure probe-classification cases — no device nodes involved.
 
 use crate::PermissionStatus;
-use crate::linux::classify;
+use crate::linux::{EventProbe, HidrawProbe, Probes};
 
+/// The whole truth table: any definite denial → `Denied`; otherwise an
+/// accessible hidraw → `Granted` and no hidraw → `Unknown`. A missing event
+/// node is not a denial, so it never downgrades a working machine.
 #[test]
-fn classify_granted_when_all_ok() {
-    assert_eq!(
-        classify(true, Some(true), Some(true)),
-        PermissionStatus::Granted
-    );
-}
+fn every_probe_combination_maps_to_its_verdict() {
+    use EventProbe::{Denied as EventDenied, NonePresent as NoEvent, Readable};
+    use HidrawProbe::{Accessible, Denied as HidrawDenied, NonePresent as NoHidraw};
+    use PermissionStatus::{Denied, Granted, Unknown};
 
-#[test]
-fn classify_denied_when_uinput_not_ok() {
-    assert_eq!(
-        classify(false, Some(true), Some(true)),
-        PermissionStatus::Denied
-    );
-    assert_eq!(
-        classify(false, Some(false), Some(false)),
-        PermissionStatus::Denied
-    );
-    assert_eq!(classify(false, None, None), PermissionStatus::Denied);
-}
-
-#[test]
-fn classify_denied_when_hidraw_denied() {
-    assert_eq!(
-        classify(true, Some(false), Some(true)),
-        PermissionStatus::Denied
-    );
-}
-
-/// The case this probe exists for: rules left by another Logitech manager cover
-/// uinput and hidraw but not the mouse's event node, so HID++ works while the
-/// hook cannot grab the mouse. Reporting `Granted` here is what made button
-/// remapping look like it was silently broken.
-#[test]
-fn classify_denied_when_event_node_denied() {
-    assert_eq!(
-        classify(true, Some(true), Some(false)),
-        PermissionStatus::Denied
-    );
-}
-
-#[test]
-fn classify_unknown_when_no_logitech_device_connected() {
-    assert_eq!(classify(true, None, None), PermissionStatus::Unknown);
-}
-
-/// No event node found is not evidence of a permission problem — with an
-/// accessible hidraw it points at sysfs, so it must not downgrade a working
-/// machine to `Denied`.
-#[test]
-fn classify_granted_when_event_node_absent() {
-    assert_eq!(classify(true, Some(true), None), PermissionStatus::Granted);
+    let cases = [
+        (true, Accessible, Readable, Granted),
+        (true, Accessible, EventDenied, Denied),
+        (true, Accessible, NoEvent, Granted),
+        (true, HidrawDenied, Readable, Denied),
+        (true, HidrawDenied, EventDenied, Denied),
+        (true, HidrawDenied, NoEvent, Denied),
+        (true, NoHidraw, Readable, Unknown),
+        (true, NoHidraw, EventDenied, Denied),
+        (true, NoHidraw, NoEvent, Unknown),
+        (false, Accessible, Readable, Denied),
+        (false, Accessible, EventDenied, Denied),
+        (false, Accessible, NoEvent, Denied),
+        (false, HidrawDenied, Readable, Denied),
+        (false, HidrawDenied, EventDenied, Denied),
+        (false, HidrawDenied, NoEvent, Denied),
+        (false, NoHidraw, Readable, Denied),
+        (false, NoHidraw, EventDenied, Denied),
+        (false, NoHidraw, NoEvent, Denied),
+    ];
+    for (uinput_writable, hidraw, event, expected) in cases {
+        let probes = Probes {
+            uinput_writable,
+            hidraw,
+            event,
+        };
+        assert_eq!(
+            PermissionStatus::from(probes),
+            expected,
+            "probes: {probes:?}"
+        );
+    }
 }
 
 mod event_nodes {
     use std::io::ErrorKind;
 
-    use crate::linux::fold_event_access;
+    use crate::linux::{EventProbe, fold_event_access};
 
     /// The case Greptile flagged: one readable Logitech node must not mask a
     /// denied one, whichever order the walk happens to reach them in. Stopping
@@ -70,28 +59,31 @@ mod event_nodes {
     fn a_denied_node_outweighs_a_readable_one_in_either_order() {
         let denied_first = [Err(ErrorKind::PermissionDenied), Ok(())];
         let readable_first = [Ok(()), Err(ErrorKind::PermissionDenied)];
-        assert_eq!(fold_event_access(denied_first), Some(false));
-        assert_eq!(fold_event_access(readable_first), Some(false));
+        assert_eq!(fold_event_access(denied_first), EventProbe::Denied);
+        assert_eq!(fold_event_access(readable_first), EventProbe::Denied);
     }
 
     #[test]
     fn all_readable_is_accessible() {
-        assert_eq!(fold_event_access([Ok(()), Ok(())]), Some(true));
+        assert_eq!(fold_event_access([Ok(()), Ok(())]), EventProbe::Readable);
     }
 
     #[test]
     fn no_logitech_nodes_is_unknown() {
-        assert_eq!(fold_event_access([]), None);
+        assert_eq!(fold_event_access([]), EventProbe::NonePresent);
     }
 
     /// A device unplugged mid-walk is neither evidence of access nor of its
     /// absence, so it must not decide the verdict on its own.
     #[test]
     fn non_permission_errors_are_ignored() {
-        assert_eq!(fold_event_access([Err(ErrorKind::NotFound)]), None);
+        assert_eq!(
+            fold_event_access([Err(ErrorKind::NotFound)]),
+            EventProbe::NonePresent
+        );
         assert_eq!(
             fold_event_access([Err(ErrorKind::NotFound), Ok(())]),
-            Some(true)
+            EventProbe::Readable
         );
     }
 }

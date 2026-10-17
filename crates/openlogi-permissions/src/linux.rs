@@ -31,28 +31,62 @@ use crate::PermissionStatus;
 /// - `Unknown` — uinput is fine but no Logitech hidraw is connected.
 #[must_use]
 pub fn input_device_access() -> PermissionStatus {
-    classify(
-        probe_uinput(),
-        probe_logitech_hidraw(),
-        probe_logitech_event(),
-    )
+    Probes {
+        uinput_writable: probe_uinput(),
+        hidraw: probe_logitech_hidraw(),
+        event: probe_logitech_event(),
+    }
+    .into()
 }
 
-/// Split from the probes so it is testable without device nodes.
+/// What probing the Logitech `/dev/hidraw*` nodes established.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HidrawProbe {
+    /// At least one Logitech hidraw opened read/write.
+    Accessible,
+    /// A Logitech hidraw is present but `open()` was refused.
+    Denied,
+    /// No Logitech hidraw is connected to probe.
+    NonePresent,
+}
+
+/// What probing the hook-relevant Logitech `/dev/input/event*` nodes
+/// established.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EventProbe {
+    /// Every matching node opened for reading.
+    Readable,
+    /// At least one matching node refused `open()`.
+    Denied,
+    /// No matching node was found to probe.
+    NonePresent,
+}
+
+/// All three probes, taken together.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Probes {
+    /// `/dev/uinput` opened for writing.
+    pub(crate) uinput_writable: bool,
+    pub(crate) hidraw: HidrawProbe,
+    pub(crate) event: EventProbe,
+}
+
+/// The verdict is a total function of the three probes — split from the
+/// probing itself so it is testable without device nodes.
 ///
-/// A `None` event probe does not block `Granted`: it means no Logitech event
-/// node was found at all, which on a machine with an accessible hidraw points at
-/// sysfs being unreadable rather than at a permission problem. Only a definite
-/// denial downgrades, so a working setup can never be reported as broken.
-pub(crate) fn classify(
-    uinput_ok: bool,
-    hidraw_ok: Option<bool>,
-    event_ok: Option<bool>,
-) -> PermissionStatus {
-    match (uinput_ok, hidraw_ok, event_ok) {
-        (false, _, _) | (_, Some(false), _) | (_, _, Some(false)) => PermissionStatus::Denied,
-        (true, Some(true), _) => PermissionStatus::Granted,
-        (true, None, _) => PermissionStatus::Unknown,
+/// `EventProbe::NonePresent` does not block `Granted`: with an accessible
+/// hidraw it points at sysfs being unreadable rather than at a permission
+/// problem. Only a definite denial downgrades, so a working setup can never be
+/// reported as broken.
+impl From<Probes> for PermissionStatus {
+    fn from(probes: Probes) -> Self {
+        match (probes.uinput_writable, probes.hidraw, probes.event) {
+            (false, _, _) | (_, HidrawProbe::Denied, _) | (_, _, EventProbe::Denied) => {
+                Self::Denied
+            }
+            (true, HidrawProbe::Accessible, _) => Self::Granted,
+            (true, HidrawProbe::NonePresent, _) => Self::Unknown,
+        }
     }
 }
 
@@ -64,13 +98,13 @@ fn probe_uinput() -> bool {
         .is_ok()
 }
 
-/// `Some(true)` — a Logitech hidraw is accessible; `Some(false)` — one is
-/// present but permission is denied; `None` — none connected.
-fn probe_logitech_hidraw() -> Option<bool> {
-    let mut any_accessible = false;
+fn probe_logitech_hidraw() -> HidrawProbe {
     let mut any_denied = false;
 
-    for entry in fs::read_dir("/dev").ok()?.filter_map(Result::ok) {
+    let Ok(entries) = fs::read_dir("/dev") else {
+        return HidrawProbe::NonePresent;
+    };
+    for entry in entries.filter_map(Result::ok) {
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
@@ -82,26 +116,20 @@ fn probe_logitech_hidraw() -> Option<bool> {
             .write(true)
             .open(Path::new("/dev").join(&name))
         {
-            Ok(_) => {
-                any_accessible = true;
-                break; // one accessible device is enough
-            }
+            Ok(_) => return HidrawProbe::Accessible, // one accessible device is enough
             Err(e) if matches!(e.kind(), ErrorKind::PermissionDenied) => any_denied = true,
             Err(_) => {} // device gone or other transient error — skip
         }
     }
 
-    if any_accessible {
-        Some(true)
-    } else if any_denied {
-        Some(false)
+    if any_denied {
+        HidrawProbe::Denied
     } else {
-        None
+        HidrawProbe::NonePresent
     }
 }
 
-/// `Some(true)` — a Logitech `/dev/input/event*` node is readable; `Some(false)`
-/// — one is present but permission is denied; `None` — none found.
+/// Probe the Logitech `/dev/input/event*` nodes the hook would grab.
 ///
 /// Read access is what the hook needs: it enumerates event nodes, keeps the
 /// Logitech mice, and grabs them exclusively. `evdev::enumerate` silently skips
@@ -124,9 +152,11 @@ fn probe_logitech_hidraw() -> Option<bool> {
 /// a Logitech device would report `Denied` for that, which is a working system.
 /// [`is_hookable_logitech_mouse`] applies the same `clicks && moves` test the
 /// hook's own `is_hookable_mouse` does.
-fn probe_logitech_event() -> Option<bool> {
-    let outcomes = fs::read_dir("/dev/input")
-        .ok()?
+fn probe_logitech_event() -> EventProbe {
+    let Ok(entries) = fs::read_dir("/dev/input") else {
+        return EventProbe::NonePresent;
+    };
+    let outcomes = entries
         .filter_map(Result::ok)
         .filter(|entry| {
             entry
@@ -144,7 +174,7 @@ fn probe_logitech_event() -> Option<bool> {
     fold_event_access(outcomes)
 }
 
-/// Fold each node's open outcome into the tri-state, denial first.
+/// Fold each node's open outcome into an [`EventProbe`], denial first.
 ///
 /// Split from [`probe_logitech_event`] so the precedence rule is testable
 /// without device nodes — in particular that it does not depend on the order
@@ -154,7 +184,7 @@ fn probe_logitech_event() -> Option<bool> {
 /// neither evidence of access nor of its absence, so it is ignored.
 pub(crate) fn fold_event_access(
     outcomes: impl IntoIterator<Item = Result<(), ErrorKind>>,
-) -> Option<bool> {
+) -> EventProbe {
     let mut any_accessible = false;
     let mut any_denied = false;
 
@@ -167,11 +197,11 @@ pub(crate) fn fold_event_access(
     }
 
     if any_denied {
-        Some(false)
+        EventProbe::Denied
     } else if any_accessible {
-        Some(true)
+        EventProbe::Readable
     } else {
-        None
+        EventProbe::NonePresent
     }
 }
 
